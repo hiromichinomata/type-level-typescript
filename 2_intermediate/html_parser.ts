@@ -126,7 +126,8 @@ type ParseOpenTag<
     ? ReadUntil<TrimLeft<AfterLt>, DelimName> extends [infer T extends string, infer Rest1 extends string]
       ? T extends '' ? never
         : ParseAttrs<Rest1> extends [infer As extends readonly Attr<any, any>[], infer Rest2 extends string]
-          ? TrimLeft<Rest1> extends `${string}/>${string}` // self-close syntactically
+          ? // `<tag/>` / `<tag />` だけ属性直後が `/…`。`${string}/>${string}` は `">\\n  <` にも誤マッチするので禁止
+            TrimLeft<Rest1> extends `/${string}`
             ? [T, As, true, Rest2]
             : IsVoid<T> extends true // implicit self-close by void tag
               ? [T, As, true, Rest2]
@@ -156,38 +157,69 @@ type MaybePushText<
   Trim<Raw> extends '' ? Acc : readonly [...Acc, TextNode<Raw>]
 
 // ---------- Node list parsing until specific closing tag ----------
+/** 要素またはテキストを 1 ステップ進める（閉じタグ検出は ParseNodes 側） */
+type ParseNodesStep<
+  S extends string,
+  StopOnTag extends string | null,
+  Acc extends readonly Node[]
+> =
+  TrimLeft<S> extends `<${string}`
+    ? ParseOpenTag<TrimLeft<S>> extends [
+        infer T extends string,
+        infer As extends readonly Attr<any, any>[],
+        infer Self extends boolean,
+        infer RestAfterOpen extends string
+      ]
+      ? Self extends true
+        ? ParseNodes<
+            RestAfterOpen,
+            StopOnTag,
+            readonly [...Acc, ElementNode<T, As, []>]
+          >
+        : ParseNodes<RestAfterOpen, T> extends [
+            infer Kids extends readonly Node[],
+            infer RestAfterChildren extends string
+          ]
+          ? ParseNodes<
+              RestAfterChildren,
+              StopOnTag,
+              readonly [...Acc, ElementNode<T, As, Kids>]
+            >
+          : never
+      : never
+    : ParseRawTextUntilLt<S> extends [
+          infer Raw extends string,
+          infer RestNext extends string
+        ]
+      ? ParseNodes<RestNext, StopOnTag, MaybePushText<Acc, Raw>>
+      : never
+
 type ParseNodes<
   S extends string,
   StopOnTag extends string | null,
   Acc extends readonly Node[] = []
 > =
   TrimLeft<S> extends ''
-    ? [Acc, ''] // EOF
-    : // closing?
-      (StopOnTag extends string
-        ? (TrimLeft<S> extends `</${string}` // potential close
-            ? ParseCloseTag<S> extends [infer N extends string, infer RestAfter extends string]
-              ? (N extends StopOnTag
-                  ? [Acc, RestAfter] // found matching close
-                  : never) // mismatched closing tag
-              : never
-            : never)
-        : never) extends [any, any] ? (StopOnTag extends string ? [Acc, string] : never)
-        : // not closing, parse element or text
-          TrimLeft<S> extends `<${string}`
-            ? // element
-              ParseOpenTag<TrimLeft<S>> extends [infer T extends string, infer As extends readonly Attr<any, any>[], infer Self extends boolean, infer RestAfterOpen extends string]
-                ? (Self extends true
-                    ? ParseNodes<RestAfterOpen, StopOnTag, readonly [...Acc, ElementNode<T, As, []>]>
-                    : // parse children until </T>
-                      ParseNodes<RestAfterOpen, T> extends [infer Kids extends readonly Node[], infer RestAfterChildren extends string]
-                        ? ParseNodes<RestAfterChildren, StopOnTag, readonly [...Acc, ElementNode<T, As, Kids>]>
-                        : never)
-                : never
-            : // text
-              ParseRawTextUntilLt<S> extends [infer Raw extends string, infer RestNext extends string]
-                ? ParseNodes<RestNext, StopOnTag, MaybePushText<Acc, Raw>>
-                : never
+    ? [Acc, '']
+    : StopOnTag extends string
+      ? TrimLeft<S> extends `</${string}`
+        ? ParseCloseTag<S> extends [
+            infer N extends string,
+            infer RestAfterClose extends string
+          ]
+          ? N extends StopOnTag
+            ? [Acc, RestAfterClose]
+            : never
+          : never
+        : ParseNodesStep<S, StopOnTag, Acc>
+      : TrimLeft<S> extends `</${string}`
+        ? ParseCloseTag<S> extends [
+            infer _N extends string,
+            infer RestAfterClose extends string
+          ]
+          ? ParseNodes<RestAfterClose, null, Acc>
+          : never
+        : ParseNodesStep<S, StopOnTag, Acc>
 
 // ---------- Top-level document ----------
 export type ParseHTML<S extends string> =
@@ -219,9 +251,9 @@ type T3 = Expect<Equal<DivAttrs[number], Attr<'id', 'app'>>>
 
 // div の children: h1, p, br の順（空白テキストは自動で落とす）
 type DivKids = AST1['children'][0] extends ElementNode<any, any, infer C> ? C : never
-type T4 = Expect<Equal<DivKids[0] extends ElementNode<any, any, any> ? DivKids[0]['tag'] : never, 'h1'>>
-type T5 = Expect<Equal<DivKids[1] extends ElementNode<any, any, any> ? DivKids[1]['tag'] : never, 'p'>>
-type T6 = Expect<Equal<DivKids[2] extends ElementNode<any, any, any> ? DivKids[2]['tag'] : never, 'br'>>
+type T4 = Expect<Equal<DivKids[0] extends ElementNode<infer Tag, any, any> ? Tag : never, 'h1'>>
+type T5 = Expect<Equal<DivKids[1] extends ElementNode<infer Tag, any, any> ? Tag : never, 'p'>>
+type T6 = Expect<Equal<DivKids[2] extends ElementNode<infer Tag, any, any> ? Tag : never, 'br'>>
 
 // h1 の class
 type H1Attrs = DivKids[0] extends ElementNode<'h1', infer A, any> ? A : never
@@ -230,7 +262,7 @@ type T7 = Expect<Equal<H1Attrs[number], Attr<'class', 'title'>>>
 // p の内容: "Hello " / <em>world</em> / "!"
 type PKids = DivKids[1] extends ElementNode<'p', any, infer C> ? C : never
 type T8  = Expect<Equal<PKids[0], TextNode<'Hello '>>>
-type T9  = Expect<Equal<PKids[1] extends ElementNode<any, any, any> ? PKids[1]['tag'] : never, 'em'>>
+type T9  = Expect<Equal<PKids[1] extends ElementNode<infer Tag, any, any> ? Tag : never, 'em'>>
 type T10 = Expect<Equal<PKids[2], TextNode<'!'>>>
 
 // 自閉/void の扱い
@@ -241,5 +273,6 @@ type T11 = Expect<Equal<BRKids['length'], 0>>
 type HTML2 = `<input disabled type="text">`
 type AST2 = ParseHTML<HTML2>
 type InputAttrs = AST2['children'][0] extends ElementNode<'input', infer A, any> ? A : never
-type T12 = Expect<Equal<InputAttrs[number], Attr<'disabled', true>>>
-type T13 = Expect<Equal<InputAttrs[number], Attr<'type', 'text'>>>
+type T12 = Expect<
+  Equal<InputAttrs, readonly [Attr<'disabled', true>, Attr<'type', 'text'>]>
+>
