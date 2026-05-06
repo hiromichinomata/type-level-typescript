@@ -1,0 +1,10 @@
+{
+  "name": "type-level-typescript",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit --strict"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}
