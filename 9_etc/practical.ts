@@ -184,7 +184,8 @@ type XOR<A, B> =
   | (A & { [K in keyof B]?: never })
   | (B & { [K in keyof A]?: never })
 
-type Range =
+/** DOM の `Range` と名前が被るため別名に（Date フィルタの XOR） */
+type DateRange =
   XOR<{ before: Date }, { after: Date }>
   // before か after のどちらかだけ
 
@@ -198,12 +199,17 @@ type ButtonBaseProps = {
 type AnchorLike = ButtonBaseProps & {
   as: 'a'
   href: string
+  /** <button> 側と排他 */
+  type?: never
 }
 type ButtonLike = ButtonBaseProps & {
   as?: 'button' // default
   type?: 'button' | 'submit'
+  /** <a> 側と排他 */
+  href?: never
 }
-type ButtonProps = XOR<AnchorLike, ButtonLike>
+/** `as` を共有するので XOR のキー never パターンだと壊れる → 判別ユニオンで表現 */
+type ButtonProps = AnchorLike | ButtonLike
 
 const primaryButton = {
   as: 'button',
