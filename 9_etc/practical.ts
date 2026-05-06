@@ -299,7 +299,7 @@ type ApiResult<TData extends Json = Json> =
   | { ok: true; data: TData }
   | { ok: false; error: string }
 
-type _Rok: ApiResult<{ id: string; name: string }> = { ok: true, data: { id: '1', name: 'a' } }
+const _Rok: ApiResult<{ id: string; name: string }> = { ok: true, data: { id: '1', name: 'a' } }
 // const _Rbad: ApiResult = { ok: true, data: new Date() } // ❌ Date は Json でない
 
 // =========================================================
