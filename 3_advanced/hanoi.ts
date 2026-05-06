@@ -8,21 +8,39 @@ type Equal<A, B> =
   (<T>() => T extends B ? 1 : 2) ? true : false
 type Expect<T extends true> = T
 
-// ---------- Tuple arithmetic ----------
-type BuildTuple<N extends number, T extends unknown[] = []> =
-  T['length'] extends N ? T : BuildTuple<N, [unknown, ...T]>
-type Inc<N extends number> = [...BuildTuple<N>, unknown]['length']
-type Dec<N extends number> =
-  BuildTuple<N> extends [...infer R, unknown] ? R['length'] : 0
-type Add<A extends number, B extends number> =
-  [...BuildTuple<A>, ...BuildTuple<B>]['length']
-type Double<N extends number> =
-  [...BuildTuple<N>, ...BuildTuple<N>]['length']
-type Eq<A extends number, B extends number> =
-  BuildTuple<A>['length'] extends BuildTuple<B>['length'] ? true : false
+// ---------- Small-nat arithmetic（BuildTuple + ['length'] の相互再帰でスタック溢れするのでカウンタ実装） ----------
+/** 長さ N のタプルを数え上げてから 1 要素足した長さ → N + 1 */
+type Inc<N extends number> =
+  _Take<N, []> extends infer Acc extends unknown[]
+    ? [...Acc, unknown]['length']
+    : never
+
+type _Take<N extends number, Acc extends unknown[]> =
+  Acc['length'] extends N ? Acc : _Take<N, [...Acc, unknown]>
+
+/** N > 0 なら N - 1。0 のときは 0（このファイルでは減算のみに使う） */
+type Dec<N extends number> = N extends 0 ? 0 : _Pred<N, []>
+
+type _Pred<N extends number, Acc extends unknown[]> =
+  [...Acc, unknown]['length'] extends N ? Acc['length'] : _Pred<N, [...Acc, unknown]>
+
+type Add<A extends number, B extends number> = B extends 0 ? A : Add<Inc<A>, Dec<B>>
+
+type Double<N extends number> = Add<N, N>
+
+type Eq<A extends number, B extends number> = A extends B ? (B extends A ? true : false) : false
+
 type Lt<A extends number, B extends number> =
-  Eq<A, B> extends true ? false
-  : BuildTuple<B> extends [...BuildTuple<A>, ...infer _] ? true : false
+  Eq<A, B> extends true ? false : _LtCmp<A, B, []>
+
+type _LtCmp<A extends number, B extends number, Acc extends unknown[]> =
+  Acc['length'] extends A
+    ? Acc['length'] extends B
+      ? false
+      : true
+    : Acc['length'] extends B
+      ? false
+      : _LtCmp<A, B, [...Acc, unknown]>
 
 // 2^N - 1（最小手数）
 type Pow2MinusOne<N extends number, Acc extends number = 0> =
@@ -35,7 +53,8 @@ type BuildAsc<N extends number, A extends number[] = []> =
 type Reverse<T extends number[], R extends number[] = []> =
   T extends [infer H extends number, ...infer U extends number[]]
     ? Reverse<U, [H, ...R]> : R
-type Stack<N extends number> = Reverse<BuildAsc<N>> // [N, ..., 2, 1]（末尾がトップ）
+// Push の結果と同じく readonly にして終局状態との比較が付くようにする
+type Stack<N extends number> = Readonly<Reverse<BuildAsc<N>>> // [N, ..., 2, 1]（末尾がトップ）
 
 type Peg = 'A' | 'B' | 'C'
 type Move<F extends Peg, T extends Peg> = Readonly<{ from: F; to: T }>
@@ -70,24 +89,37 @@ type CanPlace<R extends readonly number[], D extends number> =
 type Push<R extends readonly number[], D extends number> =
   CanPlace<R, D> extends true ? readonly [...R, D] : never
 
+/** 移動先ペグへ Disk を載せた結果（ルール違反なら never） */
+type PushedTo<
+  Mid extends State,
+  T extends Peg,
+  Disk extends number
+> =
+  T extends 'A' ? Push<Mid['A'], Disk>
+  : T extends 'B' ? Push<Mid['B'], Disk>
+  : Push<Mid['C'], Disk>
+
+type _AfterPush<Mid extends State, T extends Peg, Disk extends number> =
+  [PushedTo<Mid, T, Disk>] extends [never]
+    ? never
+    : PushedTo<Mid, T, Disk> extends infer P extends readonly number[]
+      ? Readonly<{
+          A: T extends 'A' ? P : Mid['A']
+          B: T extends 'B' ? P : Mid['B']
+          C: T extends 'C' ? P : Mid['C']
+        }>
+      : never
+
 // 1手適用（不正なら never）
 type ApplyMove<S extends State, F extends Peg, T extends Peg> =
   Pop<F extends 'A' ? S['A'] : F extends 'B' ? S['B'] : S['C']> extends
     [infer FromRest extends readonly number[], infer Disk extends number]
-      ? ( // まず from を Pop した中間状態
-          Readonly<{
-            A: F extends 'A' ? FromRest : S['A']
-            B: F extends 'B' ? FromRest : S['B']
-            C: F extends 'C' ? FromRest : S['C']
-          }>
-        ) extends infer Mid extends State
-        ? Readonly<{
-            A: T extends 'A' ? Push<Mid['A'], Disk> : Mid['A']
-            B: T extends 'B' ? Push<Mid['B'], Disk> : Mid['B']
-            C: T extends 'C' ? Push<Mid['C'], Disk> : Mid['C']
-          }> extends infer Out extends State
-          ? Out
-          : never
+      ? Readonly<{
+          A: F extends 'A' ? FromRest : S['A']
+          B: F extends 'B' ? FromRest : S['B']
+          C: F extends 'C' ? FromRest : S['C']
+        }> extends infer Mid extends State
+        ? _AfterPush<Mid, T, Disk>
         : never
       : never
 
@@ -124,8 +156,8 @@ export type Hanoi<
 // 3枚：A -> C
 type M3 = Hanoi<3, 'A', 'C', 'B'>
 type T0 = Expect<Equal<M3['length'], 7>>                 // 2^3 - 1
-type T1 = Expect<Equal<M3[0], { from: 'A'; to: 'C' }>>   // 1手目
-type T2 = Expect<Equal<M3[6], { from: 'A'; to: 'C' }>>   // 最後の手
+type T1 = Expect<Equal<M3[0], Move<'A', 'C'>>> // 1手目
+type T2 = Expect<Equal<M3[6], Move<'A', 'C'>>> // 最後の手
 
 // シミュレーション：正しく全部 C に移るか
 type S0 = InitState<3, 'A'>
